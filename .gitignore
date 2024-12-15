@@ -1,2 +1,11 @@
 wandb/*
 __pycache__/*
+
+# cache files
+cache/*
+
+# checkpoints
+checkpoints/*
+
+# data
+data/*
