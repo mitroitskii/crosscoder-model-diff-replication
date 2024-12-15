@@ -10,7 +10,7 @@ from huggingface_hub import hf_hub_download
 from typing import NamedTuple
 
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
-SAVE_DIR = Path("/workspace/crosscoder-model-diff-replication/checkpoints")
+SAVE_DIR = Path("./checkpoints")
 
 class LossOutput(NamedTuple):
     # loss: torch.Tensor
@@ -72,7 +72,7 @@ class CrossCoder(nn.Module):
             x,
             self.W_enc,
             "batch n_models d_model, n_models d_model d_hidden -> batch d_hidden",
-        )
+        ) # tensor multipication of x and W_enc
         if apply_relu:
             acts = F.relu(x_enc + self.b_enc)
         else:
@@ -94,26 +94,31 @@ class CrossCoder(nn.Module):
         return self.decode(acts)
 
     def get_losses(self, x):
+
         # x: [batch, n_models, d_model]
         x = x.to(self.dtype)
         acts = self.encode(x)
         # acts: [batch, d_hidden]
         x_reconstruct = self.decode(acts)
+
         diff = x_reconstruct.float() - x.float()
         squared_diff = diff.pow(2)
         l2_per_batch = einops.reduce(squared_diff, 'batch n_models d_model -> batch', 'sum')
         l2_loss = l2_per_batch.mean()
 
+        # Add small epsilon to prevent division by zero
+        eps = 1e-8
+
         total_variance = einops.reduce((x - x.mean(0)).pow(2), 'batch n_models d_model -> batch', 'sum')
-        explained_variance = 1 - l2_per_batch / total_variance
+        explained_variance = 1 - l2_per_batch / (total_variance + eps)
 
         per_token_l2_loss_A = (x_reconstruct[:, 0, :] - x[:, 0, :]).pow(2).sum(dim=-1).squeeze()
         total_variance_A = (x[:, 0, :] - x[:, 0, :].mean(0)).pow(2).sum(-1).squeeze()
-        explained_variance_A = 1 - per_token_l2_loss_A / total_variance_A
+        explained_variance_A = 1 - per_token_l2_loss_A / (total_variance_A + eps)
 
         per_token_l2_loss_B = (x_reconstruct[:, 1, :] - x[:, 1, :]).pow(2).sum(dim=-1).squeeze()
         total_variance_B = (x[:, 1, :] - x[:, 1, :].mean(0)).pow(2).sum(-1).squeeze()
-        explained_variance_B = 1 - per_token_l2_loss_B / total_variance_B
+        explained_variance_B = 1 - per_token_l2_loss_B / (total_variance_B + eps)
 
         decoder_norms = self.W_dec.norm(dim=-1)
         # decoder_norms: [d_hidden, n_models]
@@ -125,7 +130,8 @@ class CrossCoder(nn.Module):
         return LossOutput(l2_loss=l2_loss, l1_loss=l1_loss, l0_loss=l0_loss, explained_variance=explained_variance, explained_variance_A=explained_variance_A, explained_variance_B=explained_variance_B)
 
     def create_save_dir(self):
-        base_dir = Path("/workspace/crosscoder-model-diff-replication/checkpoints")
+        SAVE_DIR.mkdir(parents=True, exist_ok=True)
+        base_dir = Path("./checkpoints")
         version_list = [
             int(file.name.split("_")[1])
             for file in list(SAVE_DIR.iterdir())
@@ -200,7 +206,7 @@ class CrossCoder(nn.Module):
 
     @classmethod
     def load(cls, version_dir, checkpoint_version):
-        save_dir = Path("/workspace/crosscoder-model-diff-replication/checkpoints") / str(version_dir)
+        save_dir = Path("./checkpoints") / str(version_dir)
         cfg_path = save_dir / f"{str(checkpoint_version)}_cfg.json"
         weight_path = save_dir / f"{str(checkpoint_version)}.pt"
 
